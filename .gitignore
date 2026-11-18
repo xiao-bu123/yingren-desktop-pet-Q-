@@ -1,0 +1,28 @@
+# ---- 构建 / 打包产物（体积大，走 Release 下载）----
+dist/
+build/
+_build/
+*.spec
+release/
+
+# ---- 随包的运行库：96MB，用 requirements.txt 装依赖即可 ----
+.pylibs/
+
+# ---- 运行时生成的本地文件 ----
+settings.ini
+pet.log
+error.log
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
