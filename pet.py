@@ -35,8 +35,8 @@ else:
     if os.path.isdir(_BUNDLED_LIBS) and _BUNDLED_LIBS not in sys.path:
         sys.path.insert(0, _BUNDLED_LIBS)
 
-from PySide6.QtCore import (QEvent, QPoint, QPointF, QRectF, QSettings, QSize,
-                            Qt, QTimer)
+from PySide6.QtCore import (QEvent, QPoint, QPointF, QRect, QRectF, QSettings,
+                            QSize, Qt, QTimer)
 from PySide6.QtGui import (QBitmap, QCursor, QGuiApplication, QIcon, QPainter,
                            QPixmap, QRegion)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu,
 class CONFIG:
     """全局常量区：修改表现只需改这一块。"""
 
-    VERSION = "1.1"
+    VERSION = "1.2"
     APP_NAME = "影刃 Q 版"
     SETTINGS_ORG = "ShadowBladePet"
     SETTINGS_APP = "DesktopPet"
@@ -103,7 +103,39 @@ class CONFIG:
     RUN_STRETCH = 1.02              # 腾空帧纵向拉伸
     RUN_BLEND_SECONDS = 0.15        # 起步 / 收势的缓动时长
     KEY_POLL_FRAMES = 2             # 每 2 帧（约 33ms）轮询一次键盘
-    KB_VK = {"A": 0x41, "D": 0x44, "W": 0x57, "S": 0x53, "SHIFT": 0x10}
+    KB_VK = {"A": 0x41, "D": 0x44, "W": 0x57, "S": 0x53, "SHIFT": 0x10, "SPACE": 0x20}
+
+    # ---- 顶部悬挂 ----
+    HANG_TRIGGER_PX = 24            # 窗口顶边距屏幕可用区顶边小于这个值 → 悬挂
+    HANG_ENTER_SECONDS = 0.2        # 贴顶缓动时长
+    HANG_SWAY_DEG = 2.0             # 钟摆幅度
+    HANG_SWAY_PERIOD = 2.6          # 摆动周期（秒）
+    HANG_FALL_SECONDS = 0.35        # 松手自由落体到地面的时长
+    HANG_HAND_X = 0.4535            # hang.png 里拳心的归一化 x（会自动按 alpha 实测覆盖）
+    HANG_HAND_Y = 0.0299            # 拳心最高点的归一化 y
+
+    # ---- 跳跃 ----
+    JUMP_HEIGHT = 70                # 抛物最高点（px）
+    JUMP_CROUCH = 0.12              # 蓄力时长
+    JUMP_AIR = 0.50                 # 腾空时长
+    JUMP_LAND = 0.12                # 落地缓冲时长
+    JUMP_COOLDOWN = 0.15            # 落地后可再跳的间隔
+    JUMP_SQUASH = 0.90              # 落地压扁
+    JUMP_CROUCH_SCALE = 0.92        # 蓄力压扁
+    JUMP_CROUCH_SINK = 4.0          # 蓄力时下沉（绘制层 px）
+    JUMP_STRETCH = 1.03             # 腾空拉伸
+    JUMP_NEAR_GROUND = 40           # 离地小于这个高度就用小缓冲，不走自由落体
+
+    # ---- 跟随鼠标（IDLE 时朝光标方向轻轻偏头） ----
+    FOLLOW_SAMPLE_MS = 50           # 采样间隔（独立定时器，不塞进渲染节拍）
+    FOLLOW_RADIUS = 240             # 交互半径（px，以身体中心为圆心）：出圈完全不反应
+    FOLLOW_FADE_START = 0.6         # 半径的这个比例以内满幅，往外平滑淡出到 0
+    FOLLOW_TILT_SPAN = 120          # 水平偏移多少 px 到达最大倾角
+    FOLLOW_SHIFT_SPAN = 170         # 水平偏移多少 px 到达最大水平微移
+    FOLLOW_TILT_MAX = 3.0           # 最大倾角（度）
+    FOLLOW_SHIFT_MAX = 2.0          # 最大水平微移（px）
+    FOLLOW_EASE = 0.15              # 每帧缓动系数
+    FOLLOW_IDLE_RESET = 1.0         # 鼠标静止多久后回正（秒）
 
     # ---- 拖拽 ----
     DRAG_TILT_MAX = 6.0             # 最大倾斜角（度）
@@ -136,6 +168,8 @@ class CONFIG:
         "drop": "drag",
         "run_a": "walk_01",
         "run_b": "walk_02",
+        "hang": "hang",
+        "jump": "jump_air",
     }
 
     # ---- 文件 ----
@@ -149,10 +183,12 @@ class CONFIG:
         "sleep": ("sleep*.png", "04_趴睡*.png", "*趴睡*.png"),
         "walk_01": ("walk_01*.png", "*迈步1*.png"),
         "walk_02": ("walk_02*.png", "*迈步2*.png"),
+        "hang": ("hang*.png", "*悬挂*.png", "*抓*.png"),
+        "jump_air": ("jump_air*.png", "*jump*air*.png", "*腾空*.png"),
         "icon":  ("icon*.png", "icon.ico"),
     }
-    # 这两帧缺失时只关掉键盘走路，不阻塞程序启动
-    OPTIONAL_ASSETS = ("walk_01", "walk_02")
+    # 这几张缺失时只关掉对应动作，不阻塞程序启动
+    OPTIONAL_ASSETS = ("walk_01", "walk_02", "hang", "jump_air")
     LOG_FILE = "pet.log"
     ERROR_FILE = "error.log"
     SETTINGS_FILE = "settings.ini"
@@ -163,6 +199,7 @@ class CONFIG:
 IDLE, BLINK, DRAG, SLEEP, DROP = "idle", "blink", "drag", "sleep", "drop"
 RUN_A, RUN_B = "run_a", "run_b"
 RUN_STATES = (RUN_A, RUN_B)
+HANG, JUMP = "hang", "jump"
 
 
 # ============================================================================
@@ -329,6 +366,38 @@ def _compute_anchor(pixmap: QPixmap) -> tuple[float, float, tuple[float, float, 
     return anchor_x, anchor_y, bbox
 
 
+def _steps(low: float, high: float, step: float) -> tuple[float, ...]:
+    """把 [low, high] 按步长切成采样点（含两端）。"""
+    values = []
+    v = low
+    while v <= high + 1e-9:
+        values.append(round(v, 3))
+        v += step
+    if not values or values[-1] < high - 1e-9:
+        values.append(round(high, 3))
+    return tuple(values)
+
+
+def _compute_hand_pivot(pixmap: QPixmap) -> tuple[float, float]:
+    """
+    用 hang.png 最顶部 3% 的 alpha 算「拳心」——悬挂钟摆的支点。
+
+    不能直接用窗口顶部中心：这只手在画布 x≈0.45 处，绕中心转手会沿屏幕边横移。
+    返回 (x, y)，均为 0~1 的归一化比例；y 取角色最高点（手顶）。
+    """
+    width, height = pixmap.width(), pixmap.height()
+    mask = pixmap.mask()
+    full = QRegion(mask).boundingRect()
+    if full.isNull():
+        return CONFIG.HANG_HAND_X, CONFIG.HANG_HAND_Y
+
+    band_h = max(2, int(height * 0.03))
+    band = QBitmap(mask.copy(0, full.top(), width, band_h))
+    band_rect = QRegion(band).boundingRect()
+    hand_x = ((band_rect.center().x() + 0.5) / width) if not band_rect.isNull() else CONFIG.HANG_HAND_X
+    return hand_x, (full.top() + 1) / height
+
+
 def load_assets() -> tuple[dict[str, QPixmap], tuple[float, float],
                            tuple[float, float, float, float], str]:
     """
@@ -416,6 +485,12 @@ class PetWindow(QWidget):
         self._drop_from = QPointF()
         self._drop_to = QPointF()
         self._drop_tilt_from = 0.0
+        self._follow_tilt = 0.0         # 跟随鼠标的当前倾角（缓动值）
+        self._follow_shift = 0.0        # 跟随鼠标的当前水平微移（px）
+        self._follow_target_tilt = 0.0
+        self._follow_target_shift = 0.0
+        self._mouse_last_pos = QCursor.pos()
+        self._mouse_last_move_ts = 0.0
         self._last_tick = time.monotonic()
         self._last_interact = time.monotonic()
         self._pix_cache: dict[tuple[str, int, float], QPixmap] = {}
@@ -425,18 +500,41 @@ class PetWindow(QWidget):
         self._tray = None
         self._tray_hint_shown = False
 
-        # ---- 键盘踏步 ----
+        # ---- 键盘踏步 / 跳跃 ----
         self._kb_poller = KeyPoller()
         self._kb_available = self._kb_poller.available and all(
             key in self._assets for key in CONFIG.OPTIONAL_ASSETS)
         self._kb_enabled = bool(self._settings.value("keyboard", True, type=bool)) and self._kb_available
-        if not self._kb_available and self._kb_poller.available:
-            log("缺少 walk_01/walk_02 素材，键盘走路已禁用")
+        if self._kb_poller.available:
+            missing = [k for k in CONFIG.OPTIONAL_ASSETS if k not in self._assets]
+            if missing:
+                log(f"缺少可选素材：{', '.join(missing)} —— 对应动作已自动关闭")
         self._keys: set[str] = set()
+        self._prev_keys: set[str] = set()
         self._run_t = 0.0
         self._run_blend = 0.0
         self._run_frame = RUN_A
         self._key_frame = 0
+
+        # ---- 顶部悬挂 / 跳跃 ----
+        self._hang_possible = "hang" in self._assets
+        self._jump_possible = "jump_air" in self._assets
+        self._hand_norm = (_compute_hand_pivot(self._assets["hang"])
+                           if self._hang_possible
+                           else (CONFIG.HANG_HAND_X, CONFIG.HANG_HAND_Y))
+        self._hand_px = QPointF(0.0, 0.0)
+        self._hang_t = 0.0               # 进入 / 摆动计时
+        self._hang_enter = False         # 正在贴顶缓动
+        self._hang_from = QPointF()
+        self._hang_to = QPointF()
+        self._hang_amp = 0.0             # 摆动振幅（0 → HANG_SWAY_DEG 渐入）
+        self._jump_phase = ""            # crouch / air / land
+        self._jump_t = 0.0
+        self._jump_y0 = 0.0              # 起跳时窗口 y
+        self._jump_ready_at = 0.0        # 冷却结束时间
+        self._jump_interrupted = False   # 半空被鼠标接住，松手要落回地面
+        self._drop_curve = "settle"      # settle = 小缓冲；gravity = 自由落体
+        self._drop_seconds = CONFIG.DROP_DURATION
 
         # ---- 性能统计 ----
         self._fps_frames = 0
@@ -480,11 +578,17 @@ class PetWindow(QWidget):
         self._sleep_timer.setInterval(CONFIG.SLEEP_CHECK_MS)
         self._sleep_timer.timeout.connect(self._check_idle)
 
+        # 跟随鼠标：独立 50ms 采样，不塞进渲染节拍
+        self._follow_timer = QTimer(self)
+        self._follow_timer.setInterval(CONFIG.FOLLOW_SAMPLE_MS)
+        self._follow_timer.timeout.connect(self._sample_mouse)
+
         self._set_state(IDLE, force_mask=True)
         self._schedule_blink()
         self._sync_tick_rate()
         self._tick_timer.start()
         self._sleep_timer.start()
+        self._follow_timer.start()
         self._last_tick = time.monotonic()
 
         log(f"窗口尺寸 = {self.width()}x{self.height()}（画布 {self._canvas_w}，顶部留白 {self._pad_top}），"
@@ -502,8 +606,15 @@ class PetWindow(QWidget):
         return QSettings(path, QSettings.Format.IniFormat)
 
     def save_settings(self) -> None:
-        """保存位置 / 缩放 / 置顶 / 键盘控制 / 可见性。"""
-        foot = self.foot_world()
+        """保存位置 / 缩放 / 置顶 / 键盘控制 / 可见性。
+
+        悬挂时脚底在屏幕外，存的是「同一水平位置的地面点」，
+        下次启动会正常站在地上，而不是挂回屏幕顶。
+        """
+        if self.state == HANG:
+            foot = self._ground_foot()
+        else:
+            foot = self.foot_world()
         s = self._settings
         s.setValue("pos_x", round(foot.x(), 1))
         s.setValue("pos_y", round(foot.y(), 1))
@@ -515,7 +626,7 @@ class PetWindow(QWidget):
 
     # ---------------------------------------------------------------- 几何
     def _relayout(self) -> None:
-        """按当前缩放重算窗口尺寸、画布矩形与脚底锚点（像素坐标）。"""
+        """按当前缩放重算窗口尺寸、画布矩形、脚底锚点与悬挂支点（像素坐标）。"""
         self._zoom = max(CONFIG.ZOOM_MIN, min(CONFIG.ZOOM_MAX, self._zoom))
         canvas = max(64, int(round(CONFIG.BASE_SIZE * self._zoom)))
         pad = max(1, int(math.ceil(canvas * CONFIG.TOP_HEADROOM)))
@@ -523,8 +634,20 @@ class PetWindow(QWidget):
         self._canvas_h = canvas
         self._pad_top = pad
         self._anchor_px = QPointF(self._anchor_norm[0] * canvas, pad + self._anchor_norm[1] * canvas)
+        self._hand_px = QPointF(self._hand_norm[0] * canvas, pad + self._hand_norm[1] * canvas)
         self.setFixedSize(canvas, canvas + pad)
         self._pix_cache.clear()
+
+    def _pivot_px(self) -> QPointF:
+        """
+        形变支点：普通状态是脚底（站着呼吸/踏步都不会飘），
+        悬挂时是拳心（吊着晃，手才不会沿屏幕边横移）。
+        """
+        return self._hand_px if self.state == HANG else self._anchor_px
+
+    def hand_world(self) -> QPointF:
+        """拳心（悬挂支点）的屏幕坐标。"""
+        return QPointF(self.x() + self._hand_px.x(), self.y() + self._hand_px.y())
 
     def foot_world(self) -> QPointF:
         """脚底锚点的屏幕坐标。"""
@@ -586,73 +709,130 @@ class PetWindow(QWidget):
         self._pix_cache[key] = scaled
         return scaled
 
+    def _current_asset_key(self) -> str:
+        """
+        当前该画哪张图。
+
+        跳跃三阶段用的素材不一样：蓄力 / 落地用 idle（压扁），只有腾空才用 jump_air，
+        否则蹲下时还是“腿收起来”的姿势，看着很怪。
+        """
+        if self.state == JUMP and self._jump_phase != "air":
+            return "idle"
+        key = CONFIG.STATE_ASSET.get(self.state, "idle")
+        return key if key in self._assets else "idle"
+
     def _current_pixmap(self) -> QPixmap | None:
-        asset_key = CONFIG.STATE_ASSET.get(self.state, "idle")
-        if asset_key not in self._assets:          # 素材缺失时降级回 idle
-            asset_key = "idle"
-        return self._pixmap_for_asset(asset_key)
+        return self._pixmap_for_asset(self._current_asset_key())
 
     # ---------------------------------------------------------------- 遮罩
     def _mask_family(self) -> str:
-        """遮罩按「形状族」缓存：同一族内换帧 / 呼吸 / 倾斜都不重建。"""
+        """
+        遮罩按「形状族 + 朝向」缓存。
+
+        朝向必须算进缓存键：绘制时所有状态都会按 _facing 做水平镜像（刀会换到另一侧），
+        如果遮罩只按「朝右」建，镜像后的刀/身体就落在遮罩外被整块切掉。
+        """
         if self.state in RUN_STATES:
-            return "run_l" if self._facing < 0 else "run_r"
-        if self.state in (DRAG, DROP):
-            return "drag"
-        if self.state == SLEEP:
-            return "sleep"
-        return "idle"
+            fam = "run"
+        elif self.state in (DRAG, DROP):
+            fam = "drag"
+        elif self.state == SLEEP:
+            fam = "sleep"
+        elif self.state == HANG:
+            fam = "hang"
+        elif self.state == JUMP:
+            fam = "jump"
+        else:
+            fam = "idle"
+        return fam + ("_l" if self._facing < 0 else "")
 
     def _mask_spec(self):
         """
-        返回该族需要覆盖的形状包络：(纵向缩放, 颠簸列表, 倾斜列表, 素材列表, 是否镜像)。
+        返回该族的形状包络：(纵向缩放采样, 颠簸列表, 倾斜采样, 素材列表, 是否镜像)。
 
-        包络把所有动画极值都算进去，所以整套动画过程中遮罩都不需要重算，
-        也不会把角色切掉边。
+        采样必须「密」：只取两端点的话，细长物体（刀鞘、手指）在中间角度会落在两次采样
+        之间，被整根切掉——「按 A 之后刀消失」就是这么来的。所有采样会画进同一张遮罩画布，
+        最后只取一次 QRegion，所以加密的代价很低。
         """
         fam = self._mask_family()
-        if fam in ("run_l", "run_r"):
-            return (CONFIG.RUN_STRETCH,
+        base = fam[:-2] if fam.endswith("_l") else fam
+        mirror = self._facing < 0
+        if base == "run":
+            return ((CONFIG.RUN_SQUASH, CONFIG.RUN_STRETCH),
                     (-CONFIG.RUN_BOUNCE_FAST, CONFIG.RUN_BOUNCE_FAST),
-                    (-CONFIG.RUN_LEAN_FAST, 0.0, CONFIG.RUN_LEAN_FAST),
-                    ("walk_01", "walk_02"), fam == "run_l")
-        if fam == "drag":
-            return (CONFIG.DROP_SCALE_FROM, (0.0,),
-                    (-CONFIG.DRAG_TILT_MAX, 0.0, CONFIG.DRAG_TILT_MAX),
-                    ("drag",), False)
-        if fam == "sleep":
-            return (CONFIG.SLEEP_SCALE * (1.0 + CONFIG.BREATH_AMP_SLEEP), (0.0,),
-                    (0.0,), ("sleep",), False)
-        return (1.0 + CONFIG.BREATH_AMP_IDLE, (0.0,), (0.0,), ("idle",), False)
+                    _steps(-CONFIG.RUN_LEAN_FAST, CONFIG.RUN_LEAN_FAST, 2.0),
+                    ("walk_01", "walk_02"), mirror)
+        if base == "drag":
+            return ((1.0, CONFIG.DROP_SCALE_FROM), (0.0,),
+                    _steps(-CONFIG.DRAG_TILT_MAX, CONFIG.DRAG_TILT_MAX, 2.0),
+                    ("drag",), mirror)
+        if base == "sleep":
+            return ((CONFIG.SLEEP_SCALE,
+                     CONFIG.SLEEP_SCALE * (1.0 + CONFIG.BREATH_AMP_SLEEP)), (0.0,),
+                    (0.0,), ("sleep",), mirror)
+        if base == "hang":
+            return ((1.0,), (0.0,),
+                    _steps(-CONFIG.HANG_SWAY_DEG, CONFIG.HANG_SWAY_DEG, 0.5),
+                    ("hang",), mirror)
+        if base == "jump":
+            # 蓄力/落地用 idle（压到 0.90 且下沉 4px），腾空用 jump_air（拉到 1.03）
+            return (_steps(CONFIG.JUMP_SQUASH, CONFIG.JUMP_STRETCH, 0.02),
+                    (0.0, CONFIG.JUMP_CROUCH_SINK), (0.0,),
+                    ("idle", "jump_air"), mirror)
+        return ((1.0, 1.0 + CONFIG.BREATH_AMP_IDLE), (0.0,),
+                _steps(-CONFIG.FOLLOW_TILT_MAX, CONFIG.FOLLOW_TILT_MAX, 0.5),
+                ("idle",), mirror)
+
+    def _mask_pivot(self) -> QPointF:
+        """遮罩包络用的支点，必须和绘制时的支点一致（悬挂是拳心）。"""
+        return self._hand_px if self.state == HANG else self._anchor_px
 
     def _build_mask_region(self, spec) -> QRegion:
-        """按形状包络逐个体渲染，取并集得到窗口遮罩。"""
-        sy, bounces, tilts, asset_keys, mirror = spec
-        ax, ay = self._anchor_px.x(), self._anchor_px.y()
-        canvas_origin = QPointF(-ax, self._pad_top - ay)
-        region = QRegion()
+        """
+        把该族所有形变采样画进同一张遮罩画布，取一次 alpha 蒙版，再外扩 1px。
 
+        画布不参与变换：translate(支点) → 变换 → translate(-支点)，
+        所以悬挂绕拳心转、其它状态绕脚底转，画布位置都固定。
+        外扩 1px 是为了盖住抗锯齿的半透明边缘（QPixmap.mask() 的阈值是 alpha>127）。
+        """
+        sys_values, bounces, tilts, asset_keys, mirror = spec
+        pivot = self._mask_pivot()
+        canvas_origin = QPointF(0.0, float(self._pad_top))
+
+        envelope = QPixmap(self.size())
+        envelope.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(envelope)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         for asset_key in asset_keys:
             if asset_key not in self._assets:
                 continue
             pixmap = self._pixmap_for_asset(asset_key)
             for tilt in tilts:
                 for bounce in bounces:
-                    envelope = QPixmap(self.size())
-                    envelope.fill(Qt.GlobalColor.transparent)
-                    painter = QPainter(envelope)
-                    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-                    painter.translate(ax, ay + bounce)
-                    if abs(tilt) > 0.01:
-                        painter.rotate(tilt)
-                    if mirror:
-                        painter.scale(-1.0, 1.0)
-                    if abs(sy - 1.0) > 1e-4:
-                        painter.scale(1.0, sy)
-                    painter.drawPixmap(canvas_origin, pixmap)
-                    painter.end()
-                    region = region.united(QRegion(envelope.mask()))
-        return region
+                    for sy in sys_values:
+                        painter.save()
+                        painter.translate(pivot.x(), pivot.y() + bounce)
+                        if abs(tilt) > 0.01:
+                            painter.rotate(tilt)
+                        if mirror:
+                            painter.scale(-1.0, 1.0)
+                        if abs(sy - 1.0) > 1e-4:
+                            painter.scale(1.0, sy)
+                        painter.translate(-pivot.x(), -pivot.y())
+                        painter.drawPixmap(canvas_origin, pixmap)
+                        painter.restore()
+        painter.end()
+
+        region = QRegion(envelope.mask())
+        grown = region
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            grown = grown.united(region.translated(dx, dy))
+        # IDLE 还要覆盖跟随鼠标的 ±FOLLOW_SHIFT_MAX 水平微移
+        if self._mask_family().startswith("idle"):
+            pad = int(math.ceil(CONFIG.FOLLOW_SHIFT_MAX))
+            for dx in range(1, pad + 1):
+                grown = grown.united(region.translated(dx, 0)).united(region.translated(-dx, 0))
+        return grown
 
     def _update_mask(self, force: bool = False) -> None:
         """
@@ -691,6 +871,12 @@ class PetWindow(QWidget):
         changed = state != self.state
         self.state = state
         if changed:
+            # 离开站立/眨眼就把跟随鼠标的形变清掉，回到 IDLE 时再从 0 缓动进来，不会跳
+            if state not in (IDLE, BLINK):
+                self._follow_tilt = 0.0
+                self._follow_shift = 0.0
+                self._follow_target_tilt = 0.0
+                self._follow_target_shift = 0.0
             # IDLE 与 BLINK 共用同一条呼吸曲线：切换时保留相位与形变，
             # 否则每眨一次眼，角色都会「抽」一下。
             if state == SLEEP:
@@ -701,6 +887,14 @@ class PetWindow(QWidget):
                 self._sy, self._lift, self._tilt, self._bounce = 1.0, 0.0, 0.0, 0.0
             elif state == DROP:
                 self._lift = 0.0
+            elif state == HANG:
+                # 悬挂不做呼吸缩放（会被看成手在伸缩），只保留摆动
+                self._phase = 0.0
+                self._sy, self._lift, self._bounce = 1.0, 0.0, 0.0
+                self._hang_amp = 0.0
+            elif state == JUMP:
+                self._phase = 0.0
+                self._lift, self._bounce = 0.0, 0.0
         self._update_mask(force=force_mask)
         self._paint_sig = None
         self.update()
@@ -711,8 +905,8 @@ class PetWindow(QWidget):
 
     # ---------------------------------------------------------------- 帧率
     def _desired_fps(self) -> int:
-        """静止（站立 / 眨眼 / 睡觉且没按键）用 30 帧，其余用 60 帧。"""
-        if self.state in (IDLE, BLINK, SLEEP) and not self._keys:
+        """静止（站立 / 眨眼 / 睡觉 / 悬挂）用 30 帧，其余（拖拽 / 踏步 / 跳跃）用 60 帧。"""
+        if self.state in (IDLE, BLINK, SLEEP, HANG) and not self._keys:
             return CONFIG.IDLE_FPS
         return CONFIG.FPS
 
@@ -725,27 +919,167 @@ class PetWindow(QWidget):
             self._fps_frames = 0
             self._fps_since = time.monotonic()
 
-    # ---------------------------------------------------------------- 键盘踏步
+    # ---------------------------------------------------------------- 键盘（踏步 / 跳跃）
     def _poll_keys(self) -> None:
         """每 2 帧轮询一次按键；只在需要时才碰 Win32 API。"""
-        if not self._kb_enabled or self.state in (DRAG, DROP, SLEEP):
+        if not self._kb_enabled:
+            if self._keys:
+                self._keys = set()
+            return
+        # 拖拽 / 落地 / 睡觉 / 悬挂：完全收不到键盘指令
+        # （悬挂时只有「单击角色」才会松手，空格/WASD 一律不动）
+        if self.state in (DRAG, DROP, SLEEP, HANG):
             if self._keys:
                 self._keys = set()
             return
 
         keys = self._kb_poller.pressed()
+        pressed = keys - self._keys          # 上升沿：按住不放只触发一次
+        self._keys = keys
+
         # 记录 A / D 的「最后按下」，决定朝向（W / S 保持上一次朝向）
-        for name in keys - self._keys:
+        for name in pressed:
             if name == "A":
                 self._facing = -1
             elif name == "D":
                 self._facing = 1
-        self._keys = keys
+
+        if "SPACE" in pressed:
+            self._try_jump()
 
         if keys & {"A", "D", "W", "S"}:
             self._last_interact = time.monotonic()
-            if self.state not in RUN_STATES:
+            if self.state not in RUN_STATES and self.state != JUMP:
                 self._enter_run()
+
+    # ---------------------------------------------------------------- 原地跳跃
+    def _try_jump(self) -> None:
+        """空格：上升沿触发，落地冷却期内/不该跳的状态一律忽略。"""
+        if not self._jump_possible:
+            return
+        if self.state in (DRAG, DROP, SLEEP, HANG, JUMP):
+            return
+        if time.monotonic() < self._jump_ready_at:
+            return
+        self._start_jump()
+
+    def _start_jump(self) -> None:
+        """起跳：记下地面 y，先蓄力，再腾空，最后落地缓冲。"""
+        self._blink_timer.stop()
+        self._jump_phase = "crouch"
+        self._jump_t = 0.0
+        self._jump_y0 = float(self.y())
+        self._sy, self._lift, self._tilt, self._bounce = 1.0, 0.0, 0.0, 0.0
+        self._run_t = 0.0
+        self._last_interact = time.monotonic()
+        self._set_state(JUMP, force_mask=True)
+
+    def _tick_jump(self, dt: float) -> None:
+        """三阶段：蓄力 0.12s → 腾空 0.50s（抛物线）→ 落地 0.12s。窗口只做垂直移动。"""
+        self._jump_t += dt
+        if self._jump_phase == "crouch":
+            t = min(1.0, self._jump_t / CONFIG.JUMP_CROUCH)
+            self._sy = 1.0 - (1.0 - CONFIG.JUMP_CROUCH_SCALE) * t
+            self._bounce = CONFIG.JUMP_CROUCH_SINK * t
+            if t >= 1.0:
+                self._jump_phase = "air"
+                self._jump_t = 0.0
+                self._bounce = 0.0
+        elif self._jump_phase == "air":
+            t = min(1.0, self._jump_t / CONFIG.JUMP_AIR)
+            # -4h·t(1-t)：t=0 与 t=1 都是 0，最高点在正中间，落点精确回到起跳位置
+            offset = -4.0 * CONFIG.JUMP_HEIGHT * t * (1.0 - t)
+            self._move_to(QPointF(float(self.x()), self._jump_y0 + offset))
+            self._sy = 1.0 + (CONFIG.JUMP_STRETCH - 1.0) * math.sin(math.pi * t)
+            if t >= 1.0:
+                self._jump_phase = "land"
+                self._jump_t = 0.0
+                self._sy = CONFIG.JUMP_SQUASH
+                self._move_to(QPointF(float(self.x()), self._jump_y0))
+        else:  # land
+            t = min(1.0, self._jump_t / CONFIG.JUMP_LAND)
+            self._sy = CONFIG.JUMP_SQUASH + (1.0 - CONFIG.JUMP_SQUASH) * t
+            if t >= 1.0:
+                self._sy = 1.0
+                self._jump_ready_at = time.monotonic() + CONFIG.JUMP_COOLDOWN
+                if self._kb_enabled and (self._keys & {"A", "D", "W", "S"}):
+                    self._enter_run()
+                else:
+                    self._set_state(IDLE, force_mask=True)
+                    self._schedule_blink()
+
+    # ---------------------------------------------------------------- 顶部悬挂
+    def _screen_avail(self) -> QRect:
+        """当前所在屏幕的可用区域。"""
+        center = self.frameGeometry().center()
+        screen = QGuiApplication.screenAt(center) or QGuiApplication.primaryScreen()
+        return screen.availableGeometry()
+
+    def _ground_top_y(self) -> float:
+        """站在地面时的窗口 y（脚底贴 avail.bottom()-2）。"""
+        return float(self._screen_avail().bottom() - 2) - self._anchor_px.y()
+
+    def _ground_foot(self) -> QPointF:
+        """地面脚底点：悬挂时用来做位置记忆。"""
+        return QPointF(self.foot_world().x(), float(self._screen_avail().bottom() - 2))
+
+    def _near_screen_top(self) -> bool:
+        """窗口顶边离屏幕可用区顶边小于阈值 → 认为「拖到了顶部」。"""
+        avail = self._screen_avail()
+        return (self.y() - avail.top()) < CONFIG.HANG_TRIGGER_PX
+
+    def _enter_hang(self) -> None:
+        """贴顶悬挂：0.2s 缓动，让拳心正好落在屏幕顶边。"""
+        if not self._hang_possible:
+            return
+        self._blink_timer.stop()
+        self._keys = set()
+        self._hang_from = QPointF(float(self.x()), float(self.y()))
+        target_y = self._screen_avail().top() - self._hand_px.y()
+        self._hang_to = QPointF(float(self.x()), target_y)
+        self._hang_t = 0.0
+        self._hang_enter = True
+        self._hang_amp = 0.0
+        self._sy, self._lift, self._bounce, self._tilt = 1.0, 0.0, 0.0, 0.0
+        self._set_state(HANG, force_mask=True)
+
+    def _tick_hang(self, dt: float) -> None:
+        """进入缓动 + 钟摆摆动（支点在拳心，所以是「吊着晃」不是「整块牌子晃」）。"""
+        if self._hang_enter:
+            self._hang_t += dt
+            t = min(1.0, self._hang_t / CONFIG.HANG_ENTER_SECONDS)
+            ease = 1.0 - (1.0 - t) ** 2
+            pos = self._hang_from + (self._hang_to - self._hang_from) * ease
+            self._move_to(pos)
+            if t >= 1.0:
+                self._hang_enter = False
+                self._hang_t = 0.0
+                self._move_to(self._hang_to)
+            return
+
+        self._hang_t += dt
+        # 振幅 0 → 2° 渐入，避免一挂上去就猛地一摆
+        self._hang_amp = min(CONFIG.HANG_SWAY_DEG, self._hang_amp + dt * 4.0)
+        angle = self._hang_amp * math.sin(
+            2.0 * math.pi * self._hang_t / CONFIG.HANG_SWAY_PERIOD)
+        self._tilt = angle
+        self._sy = 1.0
+        self._lift = 0.0
+        self._bounce = 0.0
+
+    def _release_hang(self) -> None:
+        """松手：从屏幕顶自由落体到地面，落地压扁回弹，然后回 IDLE。"""
+        self._drop_curve = "gravity"
+        self._drop_seconds = CONFIG.HANG_FALL_SECONDS
+        self._drop_from = QPointF(float(self.x()), float(self.y()))
+        self._drop_to = QPointF(float(self.x()), self._ground_top_y())
+        self._drop_tilt_from = self._tilt
+        self._dropped_t = 0.0
+        self._tilt = 0.0
+        self._hang_enter = False
+        self._hang_amp = 0.0
+        self._last_interact = time.monotonic()
+        self._set_state(DROP)
 
     def _enter_run(self) -> None:
         """进入踏步：换走路帧、停掉眨眼、频率提到 60 帧。"""
@@ -824,7 +1158,8 @@ class PetWindow(QWidget):
             self.go_sleep()
 
     def go_sleep(self) -> None:
-        if self.state == SLEEP:
+        # 悬挂 / 跳跃中不允许入睡：否则会「躺着挂在半空」或者躺在跳起来的半空
+        if self.state in (SLEEP, HANG, JUMP):
             return
         self._blink_timer.stop()
         self._keys = set()
@@ -848,6 +1183,66 @@ class PetWindow(QWidget):
         else:
             self.go_sleep()
 
+    # ---------------------------------------------------------------- 跟随鼠标
+    def _follow_center(self) -> QPointF:
+        """交互圈的圆心：角色身体中心（脚底往上半个可见高度），不是脚底。"""
+        body_h = (self._bbox[3] - self._bbox[1]) * self._canvas_h
+        foot = self.foot_world()
+        return QPointF(foot.x(), foot.y() - body_h * 0.5)
+
+    def _sample_mouse(self) -> None:
+        """
+        每 50ms 采一次光标，算出「朝光标方向」的目标倾角与水平微移。
+
+        只在 IDLE / BLINK 生效：奔跑有固定前倾、拖拽有速度倾斜、睡觉/悬挂/跳跃都不该有反应。
+        鼠标停住超过 FOLLOW_IDLE_RESET 秒，目标归零，角色慢慢回正。
+
+        交互范围：以身体中心为圆心、FOLLOW_RADIUS 为半径的圆。
+        圈外一律不反应（光标离得再远也不会把角色拽歪），
+        圈内靠外的那部分平滑淡出，避免光标跨过边界时角色「啪」地弹正。
+        """
+        pos = QCursor.pos()
+        now = time.monotonic()
+        if pos != self._mouse_last_pos:
+            self._mouse_last_pos = pos
+            self._mouse_last_move_ts = now
+
+        if self.state not in (IDLE, BLINK) or now - self._mouse_last_move_ts > CONFIG.FOLLOW_IDLE_RESET:
+            self._follow_target_tilt = 0.0
+            self._follow_target_shift = 0.0
+            return
+
+        center = self._follow_center()
+        dx = pos.x() - center.x()
+        dy = pos.y() - center.y()
+        dist = math.hypot(dx, dy)
+
+        radius = max(1.0, float(CONFIG.FOLLOW_RADIUS))
+        if dist >= radius:
+            self._follow_target_tilt = 0.0
+            self._follow_target_shift = 0.0
+            return
+
+        inner = radius * max(0.0, min(0.95, CONFIG.FOLLOW_FADE_START))
+        if dist <= inner:
+            fade = 1.0
+        else:
+            u = (dist - inner) / max(1e-6, radius - inner)
+            fade = 1.0 - u * u * (3.0 - 2.0 * u)      # smoothstep 淡出
+
+        self._follow_target_tilt = (
+            max(-1.0, min(1.0, dx / CONFIG.FOLLOW_TILT_SPAN))
+            * CONFIG.FOLLOW_TILT_MAX * fade)
+        self._follow_target_shift = (
+            max(-1.0, min(1.0, dx / CONFIG.FOLLOW_SHIFT_SPAN))
+            * CONFIG.FOLLOW_SHIFT_MAX * fade)
+
+    def _tick_follow(self) -> None:
+        """每帧把当前倾角 / 微移缓动逼近目标（IDLE 固定 30 帧，所以 0.15 的手感是稳定的）。"""
+        self._follow_tilt += (self._follow_target_tilt - self._follow_tilt) * CONFIG.FOLLOW_EASE
+        self._follow_shift += (self._follow_target_shift - self._follow_shift) * CONFIG.FOLLOW_EASE
+        self._tilt = self._follow_tilt
+
     # ---------------------------------------------------------------- 缩放
     def set_zoom(self, zoom: float, light: bool = False) -> None:
         """
@@ -859,10 +1254,18 @@ class PetWindow(QWidget):
         zoom = max(CONFIG.ZOOM_MIN, min(CONFIG.ZOOM_MAX, zoom))
         if abs(zoom - self._zoom) < 1e-4:
             return
-        foot = self.foot_world()
-        self._zoom = zoom
-        self._relayout()
-        self._move_foot_to(foot)
+        if self.state == HANG:
+            # 悬挂时手脚都没有意义：保持「手贴屏幕顶」和水平位置不变
+            hand_x = self.hand_world().x()
+            top = float(self._screen_avail().top())
+            self._zoom = zoom
+            self._relayout()
+            self._move_to(QPointF(hand_x - self._hand_px.x(), top - self._hand_px.y()))
+        else:
+            foot = self.foot_world()
+            self._zoom = zoom
+            self._relayout()
+            self._move_foot_to(foot)
         if not light:
             self._update_mask(force=True)
             self.save_settings()
@@ -876,16 +1279,19 @@ class PetWindow(QWidget):
         painter = QPainter(self)
         painter.setRenderHints(QPainter.RenderHint.Antialiasing
                                | QPainter.RenderHint.SmoothPixmapTransform, True)
-        ax, ay = self._anchor_px.x(), self._anchor_px.y()
-        # 脚底中心为支点；_lift 向上、_bounce 向下，都是绘制层位移，窗口不动
-        painter.translate(ax, ay - self._lift + self._bounce)
+        # 支点：普通状态是脚底（往上长），悬挂是拳心（吊着晃）
+        pivot = self._pivot_px()
+        px, py = pivot.x(), pivot.y()
+        painter.translate(px, py - self._lift + self._bounce)
         if abs(self._tilt) > 0.01:
-            painter.rotate(self._tilt)                  # 前倾 / 拖拽倾斜
+            painter.rotate(self._tilt)                  # 前倾 / 拖拽倾斜 / 钟摆
         if self._facing < 0:
             painter.scale(-1.0, 1.0)                    # 朝左：水平镜像
         if abs(self._sy - 1.0) > 1e-4:
-            painter.scale(1.0, self._sy)                # 呼吸 / 踏步挤压
-        painter.drawPixmap(QPointF(-ax, self._pad_top - ay), pixmap)
+            painter.scale(1.0, self._sy)                # 呼吸 / 踏步 / 跳跃挤压
+        painter.translate(-px, -py)
+        # 跟随鼠标的水平微移只作用在绘制位置，绝不改窗口坐标（否则会抖）
+        painter.drawPixmap(QPointF(self._follow_shift, float(self._pad_top)), pixmap)
         painter.end()
 
     # ---------------------------------------------------------------- 动画节拍
@@ -907,6 +1313,7 @@ class PetWindow(QWidget):
             self._sy = 1.0 + CONFIG.BREATH_AMP_IDLE * k
             self._lift = CONFIG.IDLE_LIFT_MAX * k
             self._bounce = 0.0
+            self._tick_follow()
 
         elif self.state == SLEEP:
             self._phase += dt
@@ -917,6 +1324,12 @@ class PetWindow(QWidget):
 
         elif self.state in RUN_STATES:
             self._tick_run(dt)
+
+        elif self.state == HANG:
+            self._tick_hang(dt)
+
+        elif self.state == JUMP:
+            self._tick_jump(dt)
 
         elif self.state == DRAG:
             self._tick_drag(dt)
@@ -936,8 +1349,9 @@ class PetWindow(QWidget):
         拖拽时窗口只是移动、倾斜稳定后姿态不变，就完全不需要重绘；
         呼吸时 0.001 的缩放差（约 0.14px）肉眼看不出，可以省掉大量重绘。
         """
-        signature = (self.state, round(self._sy, 3), round(self._tilt, 2),
-                     round(self._lift, 1), round(self._bounce, 1), self._facing)
+        signature = (self.state, round(self._sy, 3), round(self._tilt, 1),
+                     round(self._lift, 1), round(self._bounce, 1),
+                     round(self._follow_shift, 1), self._facing)
         if signature != self._paint_sig:
             self._paint_sig = signature
             self.update()
@@ -961,8 +1375,10 @@ class PetWindow(QWidget):
         """
         if not self._pressed:               # 兜底：丢掉了松开事件也不会卡在悬空姿势
             self._drag_accum_x = 0.0
-            self._set_state(IDLE)
-            self._schedule_blink()
+            if self.state == DRAG and self._hang_possible and self._near_screen_top():
+                self._enter_hang()
+            else:
+                self._start_drop(interrupted=self._jump_interrupted)
             return
 
         # 本帧累计的水平位移换算成速度（px/秒），倾斜与帧率无关
@@ -989,17 +1405,30 @@ class PetWindow(QWidget):
         return target
 
     def _tick_drop(self, dt: float) -> bool:
-        """落地过渡：ease-out 二次曲线，缩放 1.02 -> 1.00。"""
+        """
+        落地过渡，两种曲线：
+          settle  —— ease-out 小缓冲（普通松手，落 13px 就停）
+          gravity —— ease-in 自由落体（悬挂松手，从屏幕顶一路砸到地面）
+        """
         self._dropped_t += dt
-        t = min(1.0, self._dropped_t / CONFIG.DROP_DURATION)
-        ease = 1.0 - (1.0 - t) ** 2
+        t = min(1.0, self._dropped_t / max(0.01, self._drop_seconds))
+        if self._drop_curve == "gravity":
+            ease = t * t                      # 越落越快
+        else:
+            ease = 1.0 - (1.0 - t) ** 2       # 越落越慢
         pos = self._drop_from + (self._drop_to - self._drop_from) * ease
-        self.move(int(round(pos.x())), int(round(pos.y())))
-        self._sy = CONFIG.DROP_SCALE_FROM - (CONFIG.DROP_SCALE_FROM - 1.0) * ease
+        self._move_to(pos)
+        if self._drop_curve == "gravity":
+            # 落地瞬间再压扁，靠后面的回弹收尾
+            self._sy = 1.0 - (1.0 - CONFIG.JUMP_SQUASH) * min(1.0, t * 1.5)
+        else:
+            self._sy = CONFIG.DROP_SCALE_FROM - (CONFIG.DROP_SCALE_FROM - 1.0) * ease
         self._tilt = self._drop_tilt_from * (1.0 - ease)
         if t >= 1.0:
             self._sy, self._tilt = 1.0, 0.0
             self._bounce = 0.0
+            self._drop_curve = "settle"
+            self._drop_seconds = CONFIG.DROP_DURATION
             self._set_state(IDLE, force_mask=True)
             self._schedule_blink()
             self.save_settings()
@@ -1020,6 +1449,14 @@ class PetWindow(QWidget):
         self._press_global = event.globalPosition().toPoint()
         self._grab_offset = QPointF(self._press_global) - QPointF(self.x(), self.y())
         self._drag_accum_x = 0.0
+
+        # 跳跃中按住：拖动优先，立刻打断跳跃把它接住（松手再落到地面）
+        if self.state == JUMP:
+            self._jump_interrupted = True
+            self._jump_phase = ""
+            self._begin_drag()
+            self._drag_arm_timer.start(CONFIG.DRAG_ARM_MS)
+            return
 
         self.wake_up()                       # 睡着时一按即醒
         # 按住的瞬间不立刻换成悬空姿势：位移超过阈值或按住超过 100ms 才进入 DRAG，
@@ -1057,6 +1494,10 @@ class PetWindow(QWidget):
         self._blink_timer.stop()
         self._drag_accum_x = 0.0
         self._grab_offset = QPointF(QCursor.pos()) - QPointF(self.x(), self.y())
+        # 从悬挂 / 跳跃里被拖走时，把摆动状态清干净
+        self._hang_enter = False
+        self._hang_amp = 0.0
+        self._tilt = 0.0
         self._set_state(DRAG)
 
     def _arm_drag(self) -> None:
@@ -1072,14 +1513,47 @@ class PetWindow(QWidget):
         self._last_interact = time.monotonic()
         self._drag_accum_x = 0.0
 
+        # 悬挂中点一下 = 松手掉下去
+        if self.state == HANG:
+            self._release_hang()
+            return
+
         if self.state != DRAG:
             # 没进入拖拽 -> 单击
             self._handle_click()
             return
 
+        # 拖到屏幕顶部松手 -> 挂上去（不再走 13px 的小缓冲）
+        if self._hang_possible and not self._jump_interrupted and self._near_screen_top():
+            self._enter_hang()
+            return
+
         # 真正的拖拽结束 -> DROP
-        self._drop_from = QPointF(self.x(), self.y())
-        self._drop_to = self._drop_target(self._drop_from)
+        self._start_drop(interrupted=self._jump_interrupted)
+
+    def _start_drop(self, interrupted: bool = False) -> None:
+        """
+        从当前高度开始下落。
+
+        普通松手 = 13px 小缓冲（保持原有手感）；
+        半空中被接住又放开 = 落到地面（离地近就还是小缓冲）。
+        """
+        self._jump_interrupted = False
+        self._drop_from = QPointF(float(self.x()), float(self.y()))
+        if interrupted:
+            self._drop_to = QPointF(float(self.x()), self._ground_top_y())
+            dist = self._drop_to.y() - self._drop_from.y()
+            if dist > CONFIG.JUMP_NEAR_GROUND:
+                self._drop_curve = "gravity"
+                self._drop_seconds = 0.25 + 0.10 * min(1.0, dist / 900.0)
+            else:
+                self._drop_curve = "settle"
+                self._drop_seconds = CONFIG.DROP_DURATION
+                self._drop_to = self._drop_target(self._drop_from)
+        else:
+            self._drop_curve = "settle"
+            self._drop_seconds = CONFIG.DROP_DURATION
+            self._drop_to = self._drop_target(self._drop_from)
         self._drop_tilt_from = self._tilt
         self._dropped_t = 0.0
         self._set_state(DROP)
@@ -1095,8 +1569,11 @@ class PetWindow(QWidget):
             self._start_blink()
 
     def mouseDoubleClickEvent(self, event) -> None:
-        """双击：睡着 <-> 醒来（Windows 会用双击事件代替第二次按下）。"""
+        """双击：睡着 <-> 醒来（悬挂状态下只认单击松手，双击忽略）。"""
         if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self.state == HANG:
+            event.accept()
             return
         self._pressed = False
         self._drag_arm_timer.stop()
@@ -1270,6 +1747,7 @@ class PetWindow(QWidget):
         self._add_zoom_slider(menu)
 
         act_sleep = menu.addAction("叫醒" if self.state == SLEEP else "立即睡觉")
+        act_sleep.setEnabled(self.state not in (HANG, JUMP))
         act_sleep.triggered.connect(lambda _=False: self.toggle_sleep())
         self._add_keyboard_toggle(menu)
 
@@ -1284,6 +1762,7 @@ class PetWindow(QWidget):
             self.toggle_visible)
         self._add_zoom_slider(menu)
         act_sleep = menu.addAction("叫醒" if self.state == SLEEP else "立即睡觉")
+        act_sleep.setEnabled(self.state not in (HANG, JUMP))
         act_sleep.triggered.connect(lambda _=False: self.toggle_sleep())
         self._add_keyboard_toggle(menu)
         menu.addSeparator()
@@ -1329,6 +1808,7 @@ class PetWindow(QWidget):
         """隐藏到托盘：停止动画节拍，几乎不占 CPU。"""
         self._tick_timer.stop()
         self._blink_timer.stop()
+        self._follow_timer.stop()
         self._keys = set()
         self.hide()
         self.save_settings()
@@ -1349,6 +1829,9 @@ class PetWindow(QWidget):
         if not self._tick_timer.isActive():
             self._sync_tick_rate()
             self._tick_timer.start()
+        if not self._follow_timer.isActive():
+            self._mouse_last_move_ts = 0.0
+            self._follow_timer.start()
         self._last_interact = time.monotonic()
         if self.state == IDLE:
             self._schedule_blink()
