@@ -90,7 +90,7 @@
 **悬挂时的规矩**：只有单击角色才会松手（0.35s 自由落体到地面并压扁回弹），直接拖动可以带走；
 `空格` / `WASD` / 双击在悬挂时一律无反应，也不会在悬挂中睡着。
 
-## 🛠 从源码运行
+##  从源码运行
 
 ```bash
 git clone https://github.com/xiao-bu123/yingren-desktop-pet-Q-.git
