@@ -20,7 +20,7 @@
 
 ---
 
-## 📥 下载即用（不需要装任何东西）
+##  下载即用（不需要装任何东西）
 
 1. 到 **[Releases](https://github.com/xiao-bu123/yingren-desktop-pet-Q-/releases)** 下载 `yingren-pet-v1.2-win64.zip`（40 MB）
 2. 解压，双击 **`影刃Q版.exe`**
