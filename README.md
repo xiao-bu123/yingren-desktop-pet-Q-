@@ -22,7 +22,7 @@
 
 ## 📥 下载即用（不需要装任何东西）
 
-1. 到 **[Releases](https://github.com/xiao-bu123/yingren-desktop-pet-Q-/releases)** 下载 `影刃Q版-v1.2-win64.zip`（40 MB）
+1. 到 **[Releases](https://github.com/xiao-bu123/yingren-desktop-pet-Q-/releases)** 下载 `yingren-pet-v1.2-win64.zip`（40 MB）
 2. 解压，双击 **`影刃Q版.exe`**
 3. 如果弹出「Windows 已保护你的电脑」→ 点 **更多信息 → 仍要运行**
 
@@ -162,7 +162,7 @@ Windows 上也可以直接双击 `start.bat`（用 `pythonw` 启动，任务栏�
 ```bash
 pip install pyinstaller
 python build_exe.py      # → dist/影刃Q版.exe（约 40 MB，单文件）
-python make_release.py   # → release/影刃Q版-v1.2-win64.zip
+python make_release.py   # → release/yingren-pet-v1.2-win64.zip
 ```
 
 ## 📁 目录结构
