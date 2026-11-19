@@ -2,7 +2,7 @@
 
 # 影刃 Q 版 · Windows 桌面挂件
 
-**一个站在屏幕角落的刀客：会呼吸、会眨眼、能被拖着走，还会在你按 WASD 时原地踏步、按空格跳一下，拖到屏幕顶上就挂住晃。**
+**一个站在屏幕角落的刀客：会呼吸、会眨眼、能被拖着走，还会在你按 WASD 时行走、按空格跳一下，拖到屏幕顶上就挂住晃。**
 
 [![Release](https://img.shields.io/github/v/release/xiao-bu123/yingren-desktop-pet-Q-?style=flat-square&color=4FA3F7&label=release)](https://github.com/xiao-bu123/yingren-desktop-pet-Q-/releases)
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D6?style=flat-square&logo=windows&logoColor=white)](#-系统要求)
