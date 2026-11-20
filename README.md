@@ -143,14 +143,14 @@ python pet.py
 Windows 上也可以直接双击 `start.bat`（用 `pythonw` 启动，任务栏里不会多一个黑框）。
 想看到实时日志和帧率就用 `start_debug.bat`。
 
-## 💻 系统要求
+##  系统要求
 
 - Windows 10 / 11 64 位（下载 exe 的用户**不需要**装 Python 或 Qt）
 - 从源码运行需要 Python 3.10+ 与 PySide6 6.6+（见 `requirements.txt`）
 - 聊天需要自己准备一个 DeepSeek API key；不填只能用挂件动作
 - 玩游戏请用「无边框窗口全屏」：独占全屏下挂件和气泡画不出来，截图也只会是黑图
 
-## 🧩 换素材 / 改人设
+##  换素材 / 改人设
 
 把 `assets/` 里的同名 PNG 换掉即可（1536×1536 透明 PNG），代码会**自动重新计算脚底锚点**：
 
@@ -173,7 +173,7 @@ Windows 上也可以直接双击 `start.bat`（用 `pythonw` 启动，任务栏�
 挂件参数在 `pet.py` 顶部的 `CONFIG` 类；对话参数在 `chat.ini`（`temperature`、`max_tokens`、`max_turns`、
 `history_hours`、超时、`hotkey`、`vision_enabled` / `search_enabled` 等）；人设改 `assets/persona.md`。改完重启即可。
 
-## 🔧 实现上比较讲究的几处
+##  实现上比较讲究的几处
 
 - **点击穿透**：按「形变包络」（呼吸最高点、倾斜两端、踏步颠簸、悬挂 ±2°、跳跃 0.90~1.03、对话 ±1px 浮动）
   渲染 `QRegion` 再 `setMask()`，按 `(形状族, 缩放, DPI)` 缓存 —— 整套动画遮罩**零重建**。
@@ -221,7 +221,7 @@ python make_release.py   # → release/yingren-pet-v2.0-win64.zip
 └── LICENSE
 ```
 
-## ❓ FAQ
+##  FAQ
 
 **按 Ctrl+Alt+P 没反应？**
 先看 `pet.log` 有没有「对话模块已加载」；托盘被隐藏时热键不工作，先单击托盘叫回来。
