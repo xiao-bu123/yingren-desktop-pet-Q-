@@ -12,6 +12,9 @@ release/
 settings.ini
 pet.log
 error.log
+chat.log
+chat.ini
+chat_history.json
 
 # ---- Python ----
 __pycache__/

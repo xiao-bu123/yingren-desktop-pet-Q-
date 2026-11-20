@@ -44,6 +44,14 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu,
                                QMessageBox, QSlider, QSystemTrayIcon, QWidget,
                                QWidgetAction)
 
+# v2.0 MVP：对话模块（输入框 / 气泡 / 设置）。缺文件时只关掉对话，挂件照常跑。
+try:
+    import chat_ui
+    _CHAT_IMPORT_ERROR: Exception | None = None
+except Exception as _exc:                                     # pragma: no cover
+    chat_ui = None
+    _CHAT_IMPORT_ERROR = _exc
+
 
 # ============================================================================
 # 1. CONFIG —— 所有可调参数集中在这里（缩放、周期、阈值……），改这里即可
@@ -51,7 +59,7 @@ from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMenu,
 class CONFIG:
     """全局常量区：修改表现只需改这一块。"""
 
-    VERSION = "1.2"
+    VERSION = "2.0-MVP"
     APP_NAME = "影刃 Q 版"
     SETTINGS_ORG = "ShadowBladePet"
     SETTINGS_APP = "DesktopPet"
@@ -125,6 +133,11 @@ class CONFIG:
     JUMP_CROUCH_SINK = 4.0          # 蓄力时下沉（绘制层 px）
     JUMP_STRETCH = 1.03             # 腾空拉伸
     JUMP_NEAR_GROUND = 40           # 离地小于这个高度就用小缓冲，不走自由落体
+
+    # ---- 对话（v2.0 MVP） ----
+    CHAT_BREATH_PERIOD = 2.4        # 等待回复时呼吸变急（平时 3.2s）
+    CHAT_FLOAT_PX = 1.0             # 正在输出时上下浮动 ±1px
+    CHAT_FLOAT_PERIOD = 1.1         # 浮动周期（秒）
 
     # ---- 跟随鼠标（IDLE 时朝光标方向轻轻偏头） ----
     FOLLOW_SAMPLE_MS = 50           # 采样间隔（独立定时器，不塞进渲染节拍）
@@ -491,6 +504,11 @@ class PetWindow(QWidget):
         self._follow_target_shift = 0.0
         self._mouse_last_pos = QCursor.pos()
         self._mouse_last_move_ts = 0.0
+        # 对话：_chat_active = 正在打字或等回复（角色动作静音），_chat_streaming = 正在逐字输出
+        self._chat = None
+        self._chat_active = False
+        self._chat_streaming = False
+        self._chat_float_t = 0.0
         self._last_tick = time.monotonic()
         self._last_interact = time.monotonic()
         self._pix_cache: dict[tuple[str, int, float], QPixmap] = {}
@@ -653,6 +671,72 @@ class PetWindow(QWidget):
         """脚底锚点的屏幕坐标。"""
         return QPointF(self.x() + self._anchor_px.x(), self.y() + self._anchor_px.y())
 
+    # ---------------------------------------------------------------- 对话挂钩
+    def attach_chat(self, chat) -> None:
+        """由 main() 在窗口显示后挂上对话控制器（chat_ui.ChatController）。"""
+        self._chat = chat
+
+    def chat_anchor(self) -> tuple[QPoint, QPoint]:
+        """给气泡/输入框用的 (头顶中点, 脚底中点)，都在屏幕坐标系里。"""
+        w = float(self._canvas_w)
+        cx = self.x() + w * 0.5
+        head_y = self.y() + self._pad_top + self._bbox[1] * w
+        foot_y = self.y() + self._pad_top + self._bbox[3] * w
+        head = QPoint(int(round(cx)), int(round(head_y)))
+        if self.state == HANG:
+            # 悬挂时脚底在屏幕外：用「头下方一个身高」当翻转到下面的基准点
+            body = (self._bbox[3] - self._bbox[1]) * w
+            return head, QPoint(head.x(), int(round(head.y() + body)))
+        return head, QPoint(int(round(cx)), int(round(foot_y)))
+
+    def set_chat_active(self, active: bool) -> None:
+        """对话门控：为真时跳过角色动作分支（但仍然轮询键盘，热键/Esc 还要用）。"""
+        active = bool(active)
+        if active == self._chat_active:
+            return
+        self._chat_active = active
+        if not active:
+            self._chat_streaming = False
+        if self.state in (IDLE, BLINK):
+            self._chat_float_t = 0.0
+        log(f"对话门控 -> {'开' if active else '关'}")
+
+    def set_chat_streaming(self, streaming: bool) -> None:
+        """正在逐字输出时做 ±1px 浮动（只影响绘制，不改窗口坐标）。"""
+        self._chat_streaming = bool(streaming)
+        self._chat_float_t = 0.0
+
+    def tray_message(self, text: str) -> None:
+        """托盘冒一句（不弹窗、不抢焦点）。"""
+        if self._tray is not None:
+            self._tray.showMessage(CONFIG.APP_NAME, text,
+                                   QSystemTrayIcon.MessageIcon.Warning, 4000)
+
+    def open_chat(self) -> None:
+        """菜单 / 双击入口：打开输入框（没填 key 会自动弹设置）。"""
+        if self._chat is None:
+            QMessageBox.information(
+                self, CONFIG.APP_NAME,
+                "对话模块没有加载起来。\n\n" + str(_CHAT_IMPORT_ERROR or "缺少 chat_ui.py"))
+            return
+        self._chat.open_input()
+
+    def open_chat_settings(self) -> None:
+        if self._chat is None:
+            return
+        self._chat.open_settings(focus_key=True)
+
+    def forget_chat(self) -> None:
+        if self._chat is None:
+            return
+        self._chat.forget()
+
+    def moveEvent(self, event) -> None:
+        """气泡跟着窗口走：任何 move（拖拽 / 跳跃 / 落地 / 悬挂）都重算头顶坐标。"""
+        super().moveEvent(event)
+        if self._chat is not None and self.isVisible():
+            self._chat.on_pet_moved()
+
     def _move_foot_to(self, point: QPointF) -> None:
         """把脚底锚点移动到指定屏幕坐标。"""
         self.move(int(round(point.x() - self._anchor_px.x())),
@@ -779,7 +863,9 @@ class PetWindow(QWidget):
             return (_steps(CONFIG.JUMP_SQUASH, CONFIG.JUMP_STRETCH, 0.02),
                     (0.0, CONFIG.JUMP_CROUCH_SINK), (0.0,),
                     ("idle", "jump_air"), mirror)
-        return ((1.0, 1.0 + CONFIG.BREATH_AMP_IDLE), (0.0,),
+        return ((1.0, 1.0 + CONFIG.BREATH_AMP_IDLE),
+                # 站立包络要盖住呼吸上移 1px、对话浮动 ±1px（气泡跟着窗口，不跟绘制偏移）
+                _steps(-CONFIG.CHAT_FLOAT_PX - 1.0, CONFIG.CHAT_FLOAT_PX, 1.0),
                 _steps(-CONFIG.FOLLOW_TILT_MAX, CONFIG.FOLLOW_TILT_MAX, 0.5),
                 ("idle",), mirror)
 
@@ -922,6 +1008,10 @@ class PetWindow(QWidget):
     # ---------------------------------------------------------------- 键盘（踏步 / 跳跃）
     def _poll_keys(self) -> None:
         """每 2 帧轮询一次按键；只在需要时才碰 Win32 API。"""
+        # 热键永远要轮询：键盘控制关掉、角色在睡觉/悬挂，都还得能叫出输入框
+        if self._chat is not None:
+            self._chat.poll_hotkey()
+
         if not self._kb_enabled:
             if self._keys:
                 self._keys = set()
@@ -936,6 +1026,11 @@ class PetWindow(QWidget):
         keys = self._kb_poller.pressed()
         pressed = keys - self._keys          # 上升沿：按住不放只触发一次
         self._keys = keys
+
+        # 对话中（正在打字 / 等回复）：按键状态照常更新，但不驱动角色动作。
+        # 不能整个函数 return —— 那样再按热键就没反应了。
+        if self._chat_active:
+            return
 
         # 记录 A / D 的「最后按下」，决定朝向（W / S 保持上一次朝向）
         for name in pressed:
@@ -1269,6 +1364,8 @@ class PetWindow(QWidget):
         if not light:
             self._update_mask(force=True)
             self.save_settings()
+        if self._chat is not None:
+            self._chat.on_pet_moved()       # 缩放后头顶位置变了，气泡要重贴
         self.update()
 
     # ---------------------------------------------------------------- 绘制
@@ -1309,10 +1406,18 @@ class PetWindow(QWidget):
 
         if self.state in (IDLE, BLINK):
             self._phase += dt
-            k = 0.5 - 0.5 * math.cos(2 * math.pi * self._phase / CONFIG.BREATH_PERIOD_IDLE)
+            # 对话时呼吸变急（3.2s -> 2.4s）；正在输出时再叠 ±1px 浮动
+            period = CONFIG.CHAT_BREATH_PERIOD if self._chat_active else CONFIG.BREATH_PERIOD_IDLE
+            k = 0.5 - 0.5 * math.cos(2 * math.pi * self._phase / period)
             self._sy = 1.0 + CONFIG.BREATH_AMP_IDLE * k
             self._lift = CONFIG.IDLE_LIFT_MAX * k
-            self._bounce = 0.0
+            if self._chat_streaming:
+                self._chat_float_t += dt
+                self._bounce = CONFIG.CHAT_FLOAT_PX * math.sin(
+                    2 * math.pi * self._chat_float_t / CONFIG.CHAT_FLOAT_PERIOD)
+            else:
+                self._bounce = 0.0
+                self._chat_float_t = 0.0
             self._tick_follow()
 
         elif self.state == SLEEP:
@@ -1569,30 +1674,27 @@ class PetWindow(QWidget):
             self._start_blink()
 
     def mouseDoubleClickEvent(self, event) -> None:
-        """双击：睡着 <-> 醒来（悬挂状态下只认单击松手，双击忽略）。"""
+        """双击：跟他说句话（v2.0）。睡觉改由自动睡 + 菜单负责。"""
         if event.button() != Qt.MouseButton.LeftButton:
-            return
-        if self.state == HANG:
-            event.accept()
             return
         self._pressed = False
         self._drag_arm_timer.stop()
         self._last_interact = time.monotonic()
-        now = time.monotonic()
-
-        if (now - self._last_wake_time) <= CONFIG.WAKE_GRACE_SECONDS:
-            # 刚被这次双击的第一下叫醒：保持清醒，不要立刻又睡回去
-            if self.state != IDLE:
-                self._set_state(IDLE, force_mask=True)
-            self._start_blink()
-            return
 
         if self.state == SLEEP:
-            self._last_wake_time = now
+            self._last_wake_time = time.monotonic()
             self._set_state(IDLE, force_mask=True)
             self._start_blink()
+
+        if self._chat is not None:
+            self._chat.open_input()
         else:
-            self.go_sleep()
+            # 对话模块缺失时保留旧行为：双击切换睡眠
+            if self.state == SLEEP:
+                self._set_state(IDLE, force_mask=True)
+                self._start_blink()
+            else:
+                self.go_sleep()
         event.accept()
 
     def wheelEvent(self, event) -> None:
@@ -1735,9 +1837,14 @@ class PetWindow(QWidget):
         act.triggered.connect(lambda _=False: self.set_keyboard_enabled(not self._kb_enabled))
 
     def fill_menu(self, menu: QMenu) -> None:
-        """右键菜单内容：置顶 / 缩放滑杆 / 睡觉 / 键盘控制 / 隐藏 / 退出。"""
+        """右键菜单内容：说话 / 置顶 / 缩放滑杆 / 睡觉 / 键盘控制 / 隐藏 / 退出。"""
         self._prepare_menu(menu)
 
+        menu.addAction("跟它说句话    Ctrl+Alt+P").triggered.connect(self.open_chat)
+        menu.addAction("忘掉刚才的对话").triggered.connect(self.forget_chat)
+        menu.addAction("设置…").triggered.connect(self.open_chat_settings)
+
+        menu.addSeparator()
         act_top = menu.addAction("永远置顶")
         act_top.setCheckable(True)
         act_top.setChecked(self._on_top)
@@ -1756,8 +1863,12 @@ class PetWindow(QWidget):
         menu.addAction("退出").triggered.connect(self.quit_app)
 
     def fill_tray_menu(self, menu: QMenu) -> None:
-        """托盘菜单内容：显示/隐藏、缩放滑杆、睡觉、键盘控制、退出。"""
+        """托盘菜单内容：说话 / 显示隐藏 / 缩放滑杆 / 睡觉 / 键盘控制 / 退出。"""
         self._prepare_menu(menu)
+        menu.addAction("跟它说句话").triggered.connect(self.open_chat)
+        menu.addAction("忘掉刚才的对话").triggered.connect(self.forget_chat)
+        menu.addAction("设置…").triggered.connect(self.open_chat_settings)
+        menu.addSeparator()
         menu.addAction("隐藏挂件" if self.isVisible() else "显示挂件").triggered.connect(
             self.toggle_visible)
         self._add_zoom_slider(menu)
@@ -1810,6 +1921,8 @@ class PetWindow(QWidget):
         self._blink_timer.stop()
         self._follow_timer.stop()
         self._keys = set()
+        if self._chat is not None:
+            self._chat.on_pet_hidden()
         self.hide()
         self.save_settings()
         log("已隐藏到托盘")
@@ -1845,6 +1958,8 @@ class PetWindow(QWidget):
 
     def quit_app(self) -> None:
         self.save_settings()
+        if self._chat is not None:
+            self._chat.shutdown()
         if self._tray is not None:
             self._tray.hide()
         self._tick_timer.stop()
@@ -1864,7 +1979,7 @@ class TrayIcon(QSystemTrayIcon):
     def __init__(self, pet: PetWindow, icon_path: str):
         super().__init__(QIcon(icon_path))
         self._pet = pet
-        self.setToolTip(CONFIG.APP_NAME)
+        self.setToolTip(f"{CONFIG.APP_NAME} v{CONFIG.VERSION}")
 
         self._menu = QMenu()
         self._menu.aboutToShow.connect(lambda: self._pet.fill_tray_menu(self._menu))
@@ -1974,7 +2089,23 @@ def main() -> int:
     else:
         log("系统托盘不可用，跳过托盘图标（右键菜单仍可使用）")
 
+    # v2.0：对话模块（热键 / 双击 / 气泡）。失败只关掉对话，挂件照常跑。
+    chat = None
+    if chat_ui is not None:
+        try:
+            chat = chat_ui.ChatController(pet)
+            pet.attach_chat(chat)
+            log(f"对话模块已加载（{chat_ui.chat_core.VERSION}），"
+                f"热键 {chat.core.cfg.hotkey}，模型 {chat.core.cfg.model}")
+        except Exception as exc:
+            log(f"对话模块初始化失败：{type(exc).__name__}: {exc}")
+            log(traceback.format_exc())
+    else:
+        log(f"对话模块不可用（{_CHAT_IMPORT_ERROR}），只保留挂件功能")
+
     app.aboutToQuit.connect(pet.save_settings)
+    if chat is not None:
+        app.aboutToQuit.connect(chat.shutdown)
     app.aboutToQuit.connect(flush_log)
     code = app.exec()
     if tray is not None:

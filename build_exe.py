@@ -72,6 +72,8 @@ def main() -> int:
         "--workpath", os.path.join(BUILD_DIR, "work"),
         "--specpath", BUILD_DIR,
         "--add-data", f"{os.path.join(ROOT, 'assets')}{os.pathsep}assets",
+        "--hidden-import", "chat_core",
+        "--hidden-import", "chat_ui",
         "--exclude-module", "tkinter",
         "--exclude-module", "unittest",
         "--exclude-module", "pydoc",
