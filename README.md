@@ -131,7 +131,7 @@
 - 联网轮会把你的问题发给搜索工具；答案来源会以小字标出。
 - 对话历史明文存在你自己电脑上的 `chat_history.json`，不上传到别处。
 
-## 🛠 从源码运行
+##  从源码运行
 
 ```bash
 git clone https://github.com/xiao-bu123/yingren-desktop-pet-Q-.git
